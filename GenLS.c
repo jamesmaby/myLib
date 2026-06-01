@@ -1,0 +1,2 @@
+
+// USART2_DECLARE_PA2_PA3(console, 115200, 128, 1024); //ex
