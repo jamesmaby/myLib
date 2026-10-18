@@ -1,5 +1,65 @@
 #include "meConsoleCarac.h"
 #include "meConsole.h"
+#include "meMalloc.h"
+
+/* Remplace la ligne courante (ring + affichage) par s */
+static void console_SetLine(conCtx_t *ctx, const char *s)
+{
+    char *pb = ctx->pBuf_current;
+    uint16_t len = 0;
+
+    while (s[len] && len < CONS_BUFFER_SIZE - 2) {
+        *pb = s[len++];
+        pb = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pb);
+    }
+    *pb = '\0';
+    pb = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pb);
+    *pb = '\0';
+
+    ctx->index = len;
+
+    console_ClearLine(ctx);
+    console_Prompt(ctx);
+    meFd_Printf(ctx->pme_sd, "%s", s);
+}
+
+
+/* Copie dans out la k-ième commande la plus récente (k = 1 : la dernière).
+ * false si elle n'existe pas ou si elle semble écrasée. */
+static bool console_HistGet(conCtx_t *ctx, uint8_t k, char *out)
+{
+    con_history_ctx_t *h = &ctx->history_ctx;
+    char    *pb   = ctx->pBuf_current;      /* = queue du ring */
+    uint16_t dist = 0;
+    uint16_t len  = 0;
+
+    for (uint8_t i = 1; i <= k; i++) {
+        len = h->bufHistCmdSz[(h->histIdx - i) & (CONS_HISTORY_NB - 1)];
+        if (len == 0)
+            return false;
+
+        dist += len + 1;                    /* caractères + '\0' */
+        for (uint16_t j = 0; j <= len; j++)
+            pb = rb_prev(ctx->buffer, CONS_BUFFER_SIZE, pb);
+    }
+
+    /* la ligne rappelée écrira len+2 octets à la queue : elle ne doit pas
+     * écraser la commande source */
+    if (dist + len + 2 > CONS_BUFFER_SIZE)
+        return false;
+
+    for (uint16_t j = 0; j < len; j++) {
+        if (*pb == '\0')
+            return false;
+        out[j] = *pb;
+        pb = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pb);
+    }
+    if (*pb != '\0')
+        return false;
+
+    out[len] = '\0';
+    return true;
+}
 
 void console_Clear(conCtx_t *ctx){
     meFd_Print(ctx->pme_sd, "\x1B[2J\x1B[H");
@@ -15,16 +75,24 @@ bool console_entrer(conCtx_t *ctx) {
         console_Prompt(ctx);
         return false;
     }
-
+    
     meFd_Printf(ctx->pme_sd, JUMP_LINE);
-    console_Prompt(ctx);
-    meFd_Printf(ctx->pme_sd, "\x1B[%dG", LEN_PROMPT);
+    con_history_ctx_t* phist = &ctx->history_ctx;
 
+    if ( rb_lenBuff(ctx) == 0 ) {
+        ctx->history_ctx.histPressNb = 0;
+        meFd_Printf(ctx->pme_sd, JUMP_LINE);
+        console_Prompt(ctx);
+        return false;
+    }
     ctx->pbuf_command = ctx->pBuf_current;
 
+    phist->bufHistCmdSz[phist->histIdx] = 0;
+    
     // Trouver le '\0' de la chaîne courante
     char *pb = ctx->pBuf_current;
     while (*pb) {
+        phist->bufHistCmdSz[phist->histIdx]++;
         pb = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pb);
     }
 
@@ -36,7 +104,12 @@ bool console_entrer(conCtx_t *ctx) {
     char *pb_next = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pb);
     *pb_next = '\0';
 
+    phist->histIdx++;
+    phist->histIdx &= (CONS_HISTORY_NB-1);
+    phist->histPressNb = 0;
+
     ctx->pBuf_current = pb;
+    ctx->pBuf_tail    = pb;
     ctx->index = 0;
 
     return true;
@@ -84,78 +157,44 @@ void console_RightArrow(conCtx_t *ctx){
     meFd_Print(ctx->pme_sd, "\x1B[C");
 }
 
-void console_UpArrow(conCtx_t *ctx) {
-    uint16_t len = 0;
-    char* pb = ctx->pBuf_current;
-    uint16_t max = CONS_BUFFER_SIZE;
+void console_UpArrow(conCtx_t *ctx)
+{
+    con_history_ctx_t *h = &ctx->history_ctx;
+    char str[CONS_BUFFER_SIZE];
 
-    pb = rb_prev( ctx->buffer, CONS_BUFFER_SIZE, pb);
-    while (*pb == '\0' && --max){
-        pb = rb_prev( ctx->buffer, CONS_BUFFER_SIZE, pb);
-    }
-    
-    max = CONS_BUFFER_SIZE;
-    while( --max ){
-        if ( *pb=='\0' )
-            break;
-
-        len++;
-        
-        char* tmp = rb_prev( ctx->buffer, CONS_BUFFER_SIZE, pb);
-        if( *tmp ) pb = tmp;
-        else  break;
-    }
-
-    if( !len )
+    if (h->histPressNb >= CONS_HISTORY_NB)
+        return;
+    if (!console_HistGet(ctx, h->histPressNb + 1, str))
         return;
 
-    ctx->pBuf_current = pb;
-    ctx->index = len;
-
-    char str[CONS_BUFFER_SIZE];
-    rb_to_string(ctx, str, len+1); // pour le '\0'
-
-    console_ClearLine(ctx);
-    console_Prompt(ctx);
-    meFd_Printf(ctx->pme_sd, "%s", str);
+    h->histPressNb++;
+    console_SetLine(ctx, str);
 }
 
-void console_DownArrow(conCtx_t *ctx) {
-    uint16_t len = 0;
-    char* pb = ctx->pBuf_current;
+void console_DownArrow(conCtx_t *ctx)
+{
+    con_history_ctx_t *h = &ctx->history_ctx;
+    char str[CONS_BUFFER_SIZE];
 
-    /*fin de chaine de la commande actuelle*/
-    uint16_t max = CONS_BUFFER_SIZE;
-    while( *pb && --max){
-        pb = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pb);
-    }
-
-    max = CONS_BUFFER_SIZE;
-    while (*pb == '\0' && --max){
-        pb = rb_next( ctx->buffer, CONS_BUFFER_SIZE, pb);
-    }
-
-    char* pt = pb;
-    while (*pt){
-        pt = rb_next(ctx->buffer, CONS_BUFFER_SIZE, pt);
-        len++;
-    }
-
-    if( !len )
+    if (h->histPressNb == 0)
         return;
 
-    ctx->pBuf_current = pb;
-    ctx->index = len;
-
-    char str[CONS_BUFFER_SIZE];
-    rb_to_string(ctx, str, len+1); // pour le '\0'
-
-    console_ClearLine(ctx);
-    console_Prompt(ctx);
-    meFd_Printf(ctx->pme_sd, "%s", str);
+    h->histPressNb--;
+    if (h->histPressNb == 0 || !console_HistGet(ctx, h->histPressNb, str)) {
+        h->histPressNb = 0;
+        str[0] = '\0';
+    }
+    console_SetLine(ctx, str);
 }
 
 void console_Echap(conCtx_t *ctx){
+    if (ctx->is_interactive && ctx->ctx_mem) {
+        meFree(ctx->ctx_mem);
+        ctx->ctx_mem = NULL;
+    }
+
+    ctx->history_ctx.histPressNb = 0;
+
     /* J'efface la commande en cours */
     char* pb = ctx->pBuf_current;
     while( *pb ){

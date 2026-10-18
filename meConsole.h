@@ -8,25 +8,18 @@
 #include "ringBuffer.h"
 
 
-#define CONS_BUFFER_SIZE 128
-#define CONS_BUFFER_SIZE_CMD (CONS_BUFFER_SIZE)
-#define TIMEOUT 50
-#define CON_ARGC_MAX 8
-#define CONS_MAX_COMMANDE_HISTORY 4// 8 dernières commandes en mémoire
-#define LEN_PROMPT (strlen(promptName)+2+1) // Taille du prompt + "> " + 1 pour décaler le curseur
+#define CONS_BUFFER_SIZE        (128) //2^x
+#define CONS_BUFFER_SIZE_CMD    (CONS_BUFFER_SIZE)
+#define CONS_ARGC_MAX           (8)
+#define CONS_HISTORY_NB         (4) //2^x
+#define LEN_PROMPT              (strlen(promptName)+2+1) // Taille du prompt + "> " + 1 pour décaler le curseur
 
 #define CLR_LINE  "\r\x1B[K"
 #define JUMP_LINE "\r\n"
 
-#ifndef CON_CTX_CMD
-    #define CON_CTX_CMD 4
-#endif
-
 #define DEF_CONS(_name, _size)                  \
         static char buff_cons_##_name[_size];   \
-        static char buff_seq_##_name[6];        \
         static meDelay_t cons_delay_##_name;    \
-        conCtx.buff_seq = buff_seq_##_name;     \
         conCtx.buffer = buff_cons_##_name;      \
         conCtx.delay_cons = &cons_delay_##_name;
 
@@ -39,47 +32,51 @@
         .fnCon = _function      \
     }
 
-
 typedef enum {
     CON_RC_DONE,
     CON_RC_BAD_ARG,
-    INTERACTIVE,
+    CON_RC_INTERACTIVE,
 }cons_cmd_rc_t;
 
+typedef struct{
+    uint8_t histPressNb;
+    uint8_t histIdx;
+    uint8_t bufHistCmdSz[CONS_HISTORY_NB];
+}con_history_ctx_t;
 
 typedef struct CONCTX_T {
-
     meFd_t *pme_sd;
 
-    char *buffer;
+    char* buffer;
     char* pBuf_current;
     char* pbuf_command; 
+    char* pBuf_tail;
     uint16_t index;
-    uint16_t current_size;
 
-    uint16_t size_mem;
+    con_history_ctx_t history_ctx;
 
     uint8_t is_esc;
     uint8_t is_print;
     uint8_t index_seq;
-    char *buff_seq;
+    char buff_seq[6];
     meDelay_t *delay_cons;
 
-    char* argv[CON_ARGC_MAX];
+    char* argv[CONS_ARGC_MAX];
     uint8_t argc;
 
     const struct CMDDESC_T *com_cmd_desc;
 
-    void *ctx_mem[CON_CTX_CMD];
+    void* ctx_mem;
     bool is_interactive;
     
 }conCtx_t;
 
 
 bool rb_strcmp(conCtx_t *ctx, char *p, const char *s);
-#define ARGGT(_n) _n > (conCtx.argc-1 )
-#define ARGNB(_n) _n == (conCtx.argc-1 )
-#define ARGEQ(_n, _s) rb_strcmp(ctx, ctx->argv[_n], _s)
+
+#define ARGGT(_n) _n > (pCtx->argc-1 )
+#define ARGNB(_n) ((_n) == (pCtx->argc - 1))
+#define ARGEQ(_n, _s) rb_strcmp(pCtx, pCtx->argv[_n], _s)
 
 typedef struct CMDDESC_T{
     const char* name;
@@ -90,7 +87,6 @@ typedef struct CMDDESC_T{
 
 extern const com_cmd_desc_t __start_console_cmd_list;
 extern const com_cmd_desc_t __end_console_cmd_list;
-
 
 typedef struct {
     const char* pSeq;
@@ -104,11 +100,11 @@ typedef enum {
     RIGHT_ARROW,
     UP_ARROW,
     DOWN_ARROW,
+    CTRL_LEFT_ARROW,
+    CTRL_RIGHT_ARROW,
     TABULATION,
     DEBUT,
     FIN,
-    CTRL_LEFT_ARROW,
-    CTRL_RIGHT_ARROW,
     ECHAP,
     DEL,
 }enum_t;
@@ -142,7 +138,7 @@ cons_cmd_rc_t console_fn_Test(conCtx_t *ctx);
 cons_cmd_rc_t console_fn_Reboot(conCtx_t *ctx);
 cons_cmd_rc_t console_fn_Echo(conCtx_t *ctx);
 cons_cmd_rc_t console_fn_Clear(conCtx_t *ctx);
-cons_cmd_rc_t console_fn_Pong(conCtx_t *ctx);
+cons_cmd_rc_t console_fn_Color(conCtx_t *pCtx);
 
 
 cons_cmd_rc_t console_parse_cmd(conCtx_t *ctx);
